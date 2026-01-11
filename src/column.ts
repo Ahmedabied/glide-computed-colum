@@ -25,7 +25,7 @@ const BUSINESS_TERMS: Record<string, string> = {
   "الخدمات الطبية": "Medical Services",
   "التجارة العامة": "General Trading",
   "الأعمال المتعددة": "Diversified Business",
-  "الاعمال المتعددة": "Diversified Business", // normalized alef usually handles this, but explicit for safety
+  "الاعمال المتعددة": "Diversified Business",
 
   // Business Activities (Single Words)
   "للتجارة": "Trading",
@@ -65,6 +65,7 @@ const BUSINESS_TERMS: Record<string, string> = {
   "شركة": "Company",
   "مجموعة": "Group",
   "مؤسسة": "Establishment",
+  "المؤسسة": "The Establishment",
   "مكتب": "Office",
 
   "المشاريع": "Projects",
@@ -83,8 +84,6 @@ const BUSINESS_TERMS: Record<string, string> = {
   "الاعمال": "Business",
   "أعمال": "Business",
   "اعمال": "Business",
-
-  // "الزرقاء": "Blue" - Removed to avoid translating city names like Zarqa or brand names incorrectly.
 
   // Conjunctions & Partners
   "وشركاه": "& Partners",
@@ -114,212 +113,91 @@ function titleCase(str: string): string {
   );
 }
 
-// Logic to process company names
+// Helper function to call QCRI transliteration API
+async function transliterate(
+  text: string,
+  fetchFn: (url: string) => Promise<any>
+): Promise<string> {
+  const apiUrl = `https://transliterate.qcri.org/ar2en/${encodeURIComponent(text)}`;
+  const finalUrl =
+    typeof window !== "undefined"
+      ? CORS_PROXY + encodeURIComponent(apiUrl)
+      : apiUrl;
+  const response = await fetchFn(finalUrl);
+  return response.results ?? text; // Fallback to original text if no results
+}
+
+// Logic to process company names using Pre-Substitution approach
 async function transliterateCompany(
   text: string,
   fetchFn: (url: string) => Promise<any>
 ): Promise<string> {
   let processedText = text;
 
-  // 1. Handle Multi-word Phrases from Dictionary first (Maximal Munch)
-  // Sort phrases by length (descending) to match longest first
-  const phrases = Object.keys(BUSINESS_TERMS)
-    .filter(k => k.includes(" ") || k.includes("_"))
-    .sort((a, b) => b.length - a.length);
+  // 1. Sort dictionary keys by length (descending) to match longest phrases/words first
+  const keys = Object.keys(BUSINESS_TERMS).sort((a, b) => b.length - a.length);
 
-  // We need to be careful not to replace parts of words, only whole words.
-  // Input text usually has spaces.
-  // We can treat keys with underscores as needing underscores in text, OR normalize text first.
+  // Normalize input spaces
+  processedText = processedText.replace(/\s+/g, " ");
 
-  // Let's normalize acronyms in text first to match keys with underscores (if any)
-  // Specific fix for "ش ش و" etc.
+  // Normalization for known acronyms if needed
   processedText = processedText
     .replace(/ش\s+م\s+م/g, "ش_م_م")
     .replace(/ذ\s+م\s+م/g, "ذ_م_م")
     .replace(/ش\s+ش\s+و/g, "ش_ش_و");
 
-  // Now strict replace for known phrases
-  for (const phrase of phrases) {
-    // 1. Handle Wa-prefix (and ...)
-    const waPhrase = "و" + phrase;
-    if (processedText.includes(waPhrase)) {
-      // Use split/join to replace all occurrences
-      processedText = processedText.split(waPhrase).join(" " + "and " + BUSINESS_TERMS[phrase] + " ");
+  // 2. Perform Substitutions
+  for (const key of keys) {
+    const translation = BUSINESS_TERMS[key];
+
+    // Handle Wa-prefixed version: "و" + key
+    const waKey = "و" + key;
+    if (processedText.includes(waKey)) {
+      // Add spaces padding to English result to avoid sticking
+      processedText = processedText.split(waKey).join(" and " + translation + " ");
     }
 
-    // 2. Handle exact phrase
-    if (processedText.includes(phrase)) {
-      processedText = processedText.split(phrase).join(" " + BUSINESS_TERMS[phrase] + " ");
-    }
-  }
-
-  const words = processedText.split(/\s+/);
-  const processedTokens: (string | null)[] = new Array(words.length).fill(null);
-  const toTransliterate: { index: number; word: string }[] = [];
-
-  for (let i = 0; i < words.length; i++) {
-    const word = words[i];
-
-    // If the word matches a pure English string (from our phrase replacement), assume it's done.
-    // Simple verification check: consists of Latin characters?
-    if (/^[A-Za-z0-9&.]+$/.test(word)) { // & for "& Co.", . for "S.P.C"
-      processedTokens[i] = word; // preserve as is (already translated)
-      continue;
-    }
-
-    // Try Lookups
-    let translation: string | undefined = undefined;
-
-    // 1. Exact Match
-    if (BUSINESS_TERMS[word]) translation = BUSINESS_TERMS[word];
-
-    // 2. Normalized Match
-    if (!translation) {
-      const norm = word.replace(/ة$/, "ه");
-      if (BUSINESS_TERMS[norm]) translation = BUSINESS_TERMS[norm];
-    }
-
-    // 3. Strip 'Al-' (The) Prefix (ال)
-    if (!translation && word.startsWith("ال") && word.length > 3) {
-      const base = word.substring(2);
-      if (BUSINESS_TERMS[base]) translation = BUSINESS_TERMS[base];
-      else {
-        // Try normalizing base
-        const normBase = base.replace(/ة$/, "ه");
-        if (BUSINESS_TERMS[normBase]) translation = BUSINESS_TERMS[normBase];
-      }
-    }
-
-    // 4. Strip 'Wa-' (And) Prefix (و)
-    if (!translation && word.startsWith("و") && word.length > 3) {
-      const withoutWa = word.substring(1);
-      // Check full word without Wa
-      if (BUSINESS_TERMS[withoutWa]) {
-        translation = "and " + BUSINESS_TERMS[withoutWa];
-      } else {
-        // Check without Wa AND without Al
-        if (withoutWa.startsWith("ال") && withoutWa.length > 3) {
-          const base = withoutWa.substring(2); // remove Al
-          if (BUSINESS_TERMS[base]) translation = "and " + BUSINESS_TERMS[base];
-        }
-      }
-    }
-
-    if (translation) {
-      processedTokens[i] = translation;
-    } else {
-      toTransliterate.push({ index: i, word });
+    // Handle Exact Key
+    if (processedText.includes(key)) {
+      processedText = processedText.split(key).join(" " + translation + " ");
     }
   }
 
-  // If there are words to transliterate, send them to QCRI
-  if (toTransliterate.length > 0) {
-    // We join them to send as context, though QCRI is word-based usually. 
-    // Sending individual words is safer to avoid sentence-level reordering attempts by the model.
-    // However, names usually benefit from being together.
-    // Let's optimize: Group consecutive unknown words to send together (Full Name logic)
-    // For now, simple approach: transliterate the full phrase of unknown words if they are adjacent?
-    // Safer approach: Transliterate the whole original string, then ONLY pick the parts we need? 
-    // No, that brings the "wherican" issue back.
-    // Best: Send the joined unknown words.
+  // Cleanup cleanup: Remove double spaces
+  processedText = processedText.replace(/\s+/g, " ").trim();
 
-    const textToTransliterate = toTransliterate.map((t) => t.word).join(" ");
+  // 3. Block Processing
+  // Find all sequences of Arabic characters (words inclusive of spaces between them)
+  // Regex: Arabic char, followed by (Arabic chars OR spaces followed by Arabic chars)
+  // This captures "Abd Allah" as one block, but "Abd English Allah" as "Abd", "Allah".
+  const arabicBlockRegex = /[\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+)*/g;
 
-    // Build API URL
-    const apiUrl = `https://transliterate.qcri.org/ar2en/${encodeURIComponent(textToTransliterate)}`;
+  const matches = processedText.match(arabicBlockRegex) || [];
 
-    const finalUrl =
-      typeof window !== "undefined"
-        ? CORS_PROXY + encodeURIComponent(apiUrl)
-        : apiUrl;
+  // Create a map of replacement tasks
+  // We need to replace each unique block. 
+  // Optimization: Deduplicate to avoid multiple calls for same name
+  const uniqueBlocks = [...new Set(matches)];
 
+  for (const block of uniqueBlocks) {
     try {
-      const response = await fetchFn(finalUrl);
-      const resultText = response.results || textToTransliterate;
+      // Transliterate the Arabic block
+      const trans = await transliterate(block, fetchFn);
 
-      // We assume QCRI returns roughly same number of space-separated tokens
-      // But it might not. "Abd Allah" -> "Abdallah". 
-      // Simple heuristic: Put the whole result in the first unknown slot, or distribute?
-      // "Abd Allah" (2 words) -> "Abdallah" (1 word).
-      // Let's just place the whole result in the slots relative to where they appeared.
+      // Apply title case to the transliteration (names usually need it)
+      const procTrans = titleCase(trans);
 
-      // Actually simpler: 
-      // Just replace the unknown block with the result. 
-      // But we have interleaved known/unknown. 
-      // "Mohamed Sarsar" (unknown) "and Co" (known) "Trading" (known).
-      // We sent "Mohamed Sarsar". 
-
-      // Let's assume the result corresponds to the joined string.
-      const transliteratedWords = resultText.split(" ");
-
-      // This mapping is tricky if word counts change. 
-      // Simplify: Just replace the *sequence* of unknown tokens with the *sequence* of result tokens.
-      // But we lost the positions if we just join.
-
-      // Revised Strategy for unknown: Send individually? 
-      // QCRI is slow for many requests.
-      // Let's try sending the *whole original string* to QCRI first to get a "suggestion", 
-      // BUT override the specific tokens we know from the dictionary.
-      // That's risky if word alignment fails.
-
-      // Back to: "Group consecutive unknowns"
-      // Example: "Mohamed" (unk) "Sarsar" (unk) "LLC" (known)
-      // Send "Mohamed Sarsar". Result "Mohamed Sarsar".
-      // Put back.
-
-      // Implementation: Just separate calls for separated naming blocks?
-      // Or just one call with all names joined by a unique separator?
-      // QCRI handles spaces fine.
-
-      const transResponse = resultText;
-
-      // Determine where to put this result.
-      // Since we can't easily map back if word counts change, we will:
-      // reconstruct the sentence array.
-
-      // Simple Hack: If we have multiple unknown chunks separated by knowns, it's complex.
-      // E.g. "Company" (known) "Name" (unk) "for" (known) "Trading" (known) "Something" (unk).
-      // Rare for company names. Usually Name + Legal.
-
-      // Let's just create a map of original word -> transliteration?
-      // No, context matters.
-
-      // Fallback: Just put the result in place of the first unknown, and clear others? 
-      // No.
-
-      // Let's simple fill:
-      let tIndex = 0;
-      const tWords = transResponse.split(/\s+/);
-
-      for (let k = 0; k < toTransliterate.length; k++) {
-        // If we have transliterated words left, take one. 
-        // If "Abd Allah" becomes "Abdallah", we have fewer words. 
-        // If "Sarsar" becomes "Sarsar", good.
-        if (tIndex < tWords.length) {
-          processedTokens[toTransliterate[k].index] = titleCase(tWords[tIndex]);
-          tIndex++;
-        } else {
-          // We ran out of transliterated words (e.g. 2->1). 
-          // Leave empty (null) which filters out later.
-        }
-      }
-
-      // If we have extra transliterated words (1->2), append to the last used slot?
-      while (tIndex < tWords.length) {
-        const lastIdx = toTransliterate[toTransliterate.length - 1].index;
-        processedTokens[lastIdx] += " " + titleCase(tWords[tIndex]);
-        tIndex++;
-      }
-
+      // Replace in text
+      // Use split/join to replace all occurrences safe from specific regex chars (Arabic usually safe)
+      processedText = processedText.split(block).join(" " + procTrans + " ");
     } catch (e) {
-      // Failed to transliterate, keep original words
-      toTransliterate.forEach(item => {
-        processedTokens[item.index] = item.word;
-      });
+      console.error("Failed to transliterate block:", block, e);
+      // Keep Arabic if failed
     }
   }
 
-  return processedTokens.filter(t => t !== null && t !== "").join(" ");
+  // Final Cleanup
+  return processedText.replace(/\s+/g, " ").trim();
 }
 
 export default glide.column({
