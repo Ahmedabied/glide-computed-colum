@@ -1,2 +1,2 @@
 require("dotenv").config();
-require("whatwg-fetch");
+global.fetch = require("cross-fetch");
