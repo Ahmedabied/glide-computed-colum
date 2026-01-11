@@ -6,31 +6,85 @@ const cache = new Cache();
 // CORS proxy to bypass browser restrictions
 const CORS_PROXY = "https://corsproxy.io/?";
 
-// Business Dictionary for standard translations
+// Business Dictionary for standard translations (English values should be Title Case)
 const BUSINESS_TERMS: Record<string, string> = {
   // Legal Entities
   "ش م م": "LLC",
-  "ش_م_م": "LLC", // Normalized form
+  "ش_م_م": "LLC", // Normalized
   "ش.م.م": "LLC",
   "ذ م م": "LLC",
-  "ذ_م_م": "LLC", // Normalized form
+  "ذ_م_م": "LLC", // Normalized
   "ذ.م.م": "LLC",
+  "ش ش و": "S.P.C",
+  "ش_ش_و": "S.P.C",
   "مساهمة": "Joint Stock",
   "محدودة": "Limited",
 
-  // Business Activities
+  // Phrases (Bigrams for reordering/better transliteration)
+  "المشاريع الطبية": "Medical Projects",
+  "الخدمات الطبية": "Medical Services",
+  "التجارة العامة": "General Trading",
+  "الأعمال المتعددة": "Diversified Business",
+  "الاعمال المتعددة": "Diversified Business", // normalized alef usually handles this, but explicit for safety
+
+  // Business Activities (Single Words)
   "للتجارة": "Trading",
+  "التجارة": "Trading",
+  "تجارة": "Trading",
+
   "للاستثمار": "Investment",
+  "الاستثمار": "Investment",
+  "استثمار": "Investment",
+
   "للمقاولات": "Contracting",
+  "المقاولات": "Contracting",
+  "مقاولات": "Contracting",
+
   "للخدمات": "Services",
+  "الخدمات": "Services",
+  "خدمات": "Services",
+
   "للصناعة": "Industrial",
+  "الصناعة": "Industrial",
+  "صناعة": "Industrial",
+
   "للاستيراد": "Import",
+  "الاستيراد": "Import",
+  "استيراد": "Import",
+
   "للتصدير": "Export",
+  "التصدير": "Export",
+  "تصدير": "Export",
+
   "والتوزيع": "and Distribution",
+  "التوزيع": "Distribution",
+  "توزيع": "Distribution",
+
   "القابضة": "Holding",
   "الشركة": "The Company",
   "شركة": "Company",
   "مجموعة": "Group",
+  "مؤسسة": "Establishment",
+  "مكتب": "Office",
+
+  "المشاريع": "Projects",
+  "مشاريع": "Projects",
+
+  "الطبية": "Medical",
+  "طبية": "Medical",
+
+  "العامة": "General",
+  "عامه": "General",
+
+  "المتعددة": "Diversified",
+  "متعددة": "Diversified",
+
+  "الأعمال": "Business",
+  "الاعمال": "Business",
+  "أعمال": "Business",
+  "اعمال": "Business",
+
+  // "الزرقاء": "Blue" - Removed to avoid translating city names like Zarqa or brand names incorrectly.
 
   // Conjunctions & Partners
   "وشركاه": "& Partners",
@@ -65,13 +119,39 @@ async function transliterateCompany(
   text: string,
   fetchFn: (url: string) => Promise<any>
 ): Promise<string> {
-  // Pre-process known multi-word phrases
-  // We replace them with a unique placeholder to preserve them as single tokens
   let processedText = text;
 
-  // Handle space-separated acronyms specifically - join with underscore to keep as one token
-  processedText = processedText.replace(/ش\s+م\s+م/g, "ش_م_م")
-    .replace(/ذ\s+م\s+م/g, "ذ_م_م");
+  // 1. Handle Multi-word Phrases from Dictionary first (Maximal Munch)
+  // Sort phrases by length (descending) to match longest first
+  const phrases = Object.keys(BUSINESS_TERMS)
+    .filter(k => k.includes(" ") || k.includes("_"))
+    .sort((a, b) => b.length - a.length);
+
+  // We need to be careful not to replace parts of words, only whole words.
+  // Input text usually has spaces.
+  // We can treat keys with underscores as needing underscores in text, OR normalize text first.
+
+  // Let's normalize acronyms in text first to match keys with underscores (if any)
+  // Specific fix for "ش ش و" etc.
+  processedText = processedText
+    .replace(/ش\s+م\s+م/g, "ش_م_م")
+    .replace(/ذ\s+م\s+م/g, "ذ_م_م")
+    .replace(/ش\s+ش\s+و/g, "ش_ش_و");
+
+  // Now strict replace for known phrases
+  for (const phrase of phrases) {
+    // 1. Handle Wa-prefix (and ...)
+    const waPhrase = "و" + phrase;
+    if (processedText.includes(waPhrase)) {
+      // Use split/join to replace all occurrences
+      processedText = processedText.split(waPhrase).join(" " + "and " + BUSINESS_TERMS[phrase] + " ");
+    }
+
+    // 2. Handle exact phrase
+    if (processedText.includes(phrase)) {
+      processedText = processedText.split(phrase).join(" " + BUSINESS_TERMS[phrase] + " ");
+    }
+  }
 
   const words = processedText.split(/\s+/);
   const processedTokens: (string | null)[] = new Array(words.length).fill(null);
@@ -79,22 +159,49 @@ async function transliterateCompany(
 
   for (let i = 0; i < words.length; i++) {
     const word = words[i];
-    // Try exact match first
-    let translation = BUSINESS_TERMS[word];
 
-    // Try normalized match (remove ta-marbuta distinction etc)
-    if (!translation) {
-      // Very basic normalization for lookup
-      const norm = word.replace(/ة$/, "ه");
-      translation = BUSINESS_TERMS[norm];
+    // If the word matches a pure English string (from our phrase replacement), assume it's done.
+    // Simple verification check: consists of Latin characters?
+    if (/^[A-Za-z0-9&.]+$/.test(word)) { // & for "& Co.", . for "S.P.C"
+      processedTokens[i] = word; // preserve as is (already translated)
+      continue;
     }
 
-    // Try match without 'wa' prefix (and/&)
+    // Try Lookups
+    let translation: string | undefined = undefined;
+
+    // 1. Exact Match
+    if (BUSINESS_TERMS[word]) translation = BUSINESS_TERMS[word];
+
+    // 2. Normalized Match
+    if (!translation) {
+      const norm = word.replace(/ة$/, "ه");
+      if (BUSINESS_TERMS[norm]) translation = BUSINESS_TERMS[norm];
+    }
+
+    // 3. Strip 'Al-' (The) Prefix (ال)
+    if (!translation && word.startsWith("ال") && word.length > 3) {
+      const base = word.substring(2);
+      if (BUSINESS_TERMS[base]) translation = BUSINESS_TERMS[base];
+      else {
+        // Try normalizing base
+        const normBase = base.replace(/ة$/, "ه");
+        if (BUSINESS_TERMS[normBase]) translation = BUSINESS_TERMS[normBase];
+      }
+    }
+
+    // 4. Strip 'Wa-' (And) Prefix (و)
     if (!translation && word.startsWith("و") && word.length > 3) {
       const withoutWa = word.substring(1);
-      const subTrans = BUSINESS_TERMS[withoutWa] || BUSINESS_TERMS[withoutWa.replace(/ة$/, "ه")];
-      if (subTrans) {
-        translation = "and " + subTrans;
+      // Check full word without Wa
+      if (BUSINESS_TERMS[withoutWa]) {
+        translation = "and " + BUSINESS_TERMS[withoutWa];
+      } else {
+        // Check without Wa AND without Al
+        if (withoutWa.startsWith("ال") && withoutWa.length > 3) {
+          const base = withoutWa.substring(2); // remove Al
+          if (BUSINESS_TERMS[base]) translation = "and " + BUSINESS_TERMS[base];
+        }
       }
     }
 

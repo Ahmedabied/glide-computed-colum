@@ -68,6 +68,55 @@ test("Translates known company terms correctly", async () => {
   expect(response).not.toMatch(/[\u0600-\u06FF]/);
 });
 
+test("Handles complex phrases and S.P.C", async () => {
+  // Case 1: الأعمال المتعددة للاستثمار والمشاريع الطبية ش ش و
+  // Expected: ... Diversified Business Investment ... Medical Projects S.P.C
+  const response = await main.run(
+    { type: "string", value: "en" },
+    { type: "string", value: "الأعمال المتعددة للاستثمار والمشاريع الطبية ش ش و" }
+  );
+
+  expect(response).toContain("Diversified Business"); // Phrase match
+  expect(response).toContain("Investment"); // Strip 'Li-Al-' (للاستثمار) -> İstathmar?
+  // Wait, 'للاستثمار' -> 'Li' + 'Al' + 'Istithmar'. 
+  // My dictionary has 'للاستثمار'. Simple lookup.
+
+  expect(response).toContain("Medical Projects"); // Phrase match (swapped order)
+  expect(response).toContain("S.P.C"); // Normalized acronym
+});
+
+test("Handles definite articles and fallback lookups", async () => {
+  // "المشاريع" -> "Projects" (via Al- strip if not exact, but I added exact)
+  // "الحمامة الزرقاء" -> "Hammama Zarqa" (Zarqa not in dict)
+  const response = await main.run(
+    { type: "string", value: "en" },
+    { type: "string", value: "المشاريع الحمامة الزرقاء" }
+  );
+  expect(response).toContain("Projects");
+  // Zarqa should be transliterated, not translated as "Blue"
+  // We can't easily assert transliteration exactness without mocking, but check it's not "Blue"
+  expect(response).not.toContain("Blue");
+});
+
+test("Verify Al preservation for names", async () => {
+  // "المشاريع" -> "Projects" (via dict)
+  // "الحمامة الزرقاء" -> "Hammama Zarqa" (Zarqa not in dict)
+  // Verify 'Al' is preserved for names if QCRI provides it (QCRI usually does for proper nouns)
+  // Note: We can't strictly assert QCRI output without mocking, but we can assume standard behavior.
+  // Let's test non-dict word with Al.
+  // "الفجر" (The Dawn) -> "Al Fajar" or "Al-Fajar"
+
+  const response = await main.run(
+    { type: "string", value: "en" },
+    { type: "string", value: "شركة الفجر" }
+  );
+  expect(response).toContain("Company");
+  // We expect 'Al' to be present because 'Fajr' is not in our dictionary
+  // response should be "Company Al Fajar" or similar.
+  // We use simple regex to check for Al/El
+  expect(response).toMatch(/Al|El/i);
+});
+
 test("Handles simple LLC normalization", async () => {
   const response = await main.run(
     { type: "string", value: "en" },
