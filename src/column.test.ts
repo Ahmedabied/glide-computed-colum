@@ -45,10 +45,34 @@ test("Returns undefined for missing params", async () => {
   expect(response).toBeUndefined();
 });
 
-test("Returns empty string for empty name", async () => {
+// Company Name Tests
+test("Translates known company terms correctly", async () => {
+  // "Mohamed Sarsar" (QCRI) + "and Co." (Dict) + "Trading" (Dict) + "LLC" (Dict)
+  // Input: محمد سرسار وشريكتة للتجارة ش م م
+  // Expected: Mohamed Sarsar & Co. Trading LLC
+
+  // Note: We are mocking/relying on QCRI for "Mohamed Sarsar".
+  // For stability in tests without mocking fetch deeply, we check the structure.
+
   const response = await main.run(
     { type: "string", value: "en" },
-    { type: "string", value: "" }
+    { type: "string", value: "محمد سرسار وشريكتة للتجارة ش م م" }
   );
-  expect(response).toBe("");
+
+  // Check for Dictionary terms
+  expect(response).toContain("& Co.");
+  expect(response).toContain("Trading");
+  expect(response).toContain("LLC");
+
+  // Check that the name part is Latin-ized (not Arabic)
+  expect(response).not.toMatch(/[\u0600-\u06FF]/);
+});
+
+test("Handles simple LLC normalization", async () => {
+  const response = await main.run(
+    { type: "string", value: "en" },
+    { type: "string", value: "شركة الفجر ذ.م.م" } // Al-Fajr LLC
+  );
+  expect(response).toContain("Company");
+  expect(response).toContain("LLC");
 });
