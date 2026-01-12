@@ -175,15 +175,35 @@ function replaceWord(text: string, target: string, replacement: string): string 
 // Heuristic to pick best transliteration candidate
 function pickBest(candidates: string[]): string {
   if (!candidates || candidates.length === 0) return "";
+  if (candidates.length === 1) return candidates[0];
 
-  // Prefer candidates with more vowels (approximate for 'better English')
-  // and shorter length (usu. less noise), but really just first is often best from QCRI.
-  // QCRI usually sorts by probability.
+  // Score each candidate
+  const scored = candidates.map((c) => {
+    let score = 0;
+    const lower = c.toLowerCase();
 
-  // Let's filter out ones that look like garbage or pure consonants if possible.
-  // For now, returning the first valid one is the baseline, 
-  // but let's try to avoid ones with numbers or high ratio of non-letters.
-  return candidates[0];
+    // Prefer more vowels (indicates proper English transliteration)
+    const vowelCount = (lower.match(/[aeiou]/g) || []).length;
+    score += vowelCount * 2;
+
+    // Penalize if it contains numbers or special chars
+    if (/\d/.test(c)) score -= 5;
+    if (/[^a-zA-Z\s'-]/.test(c)) score -= 3;
+
+    // Prefer moderate length (too short = truncated, too long = garbage)
+    if (c.length >= 3 && c.length <= 50) score += 1;
+
+    // Penalize pure consonants (likely bad transliteration)
+    if (vowelCount === 0 && c.length > 2) score -= 5;
+
+    return { candidate: c, score };
+  });
+
+  // Sort by score descending
+  scored.sort((a, b) => b.score - a.score);
+
+  // Return best candidate (or first if all tied)
+  return scored[0].candidate || candidates[0];
 }
 
 interface QCRIResponse {
