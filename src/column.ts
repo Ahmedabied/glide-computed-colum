@@ -199,7 +199,7 @@ async function transliterate(
 ): Promise<string> {
   if (!text.trim()) return "";
 
-  // Use nbest endpoint
+  // Use nbest endpoint for better results
   const apiUrl = `https://transliterate.qcri.org/ar2en/nbest/${encodeURIComponent(text)}`;
   const finalUrl =
     typeof window !== "undefined"
@@ -208,9 +208,19 @@ async function transliterate(
 
   try {
     const response = await fetchFn(finalUrl);
-    // Validating response shape
-    if (response && response.results && Array.isArray(response.results)) {
-      return pickBest(response.results);
+    // QCRI nbest returns { results: { "0": "...", "1": "..." } } - object, not array
+    // Simple endpoint returns { results: "string" }
+    if (response && response.results) {
+      if (typeof response.results === "string") {
+        return response.results;
+      }
+      if (typeof response.results === "object") {
+        // Handle both array and object with numeric keys
+        const values = Array.isArray(response.results)
+          ? response.results
+          : Object.values(response.results);
+        return pickBest(values as string[]);
+      }
     }
     return text;
   } catch (e) {
